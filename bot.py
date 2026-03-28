@@ -24,15 +24,15 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
 # --- CONFIGURATION ---
-API_TOKEN = ""
-SUPER_ADMIN_ID = 123445678
-SUPPORT_USER = "@usernamr"
+API_TOKEN = "8675364583:AAHTEeOezGCTtPbZ5DGoIIXXiqsO_jwOFQ8"
+SUPER_ADMIN_ID = 7582584348
+SUPPORT_USER = "@Ronakguptaji"
 
 # Default Channels
 DEFAULT_CHANNELS = [
-    {"name": "Main Channel 🎟", "id": "@SheinCodesLimited", "link": "https://t.me/SheinCodesLimited"},
-    {"name": "Saxin Updates", "id": "@bysaxin", "link": "https://t.me/bysaxin"},
-    {"name": "Sadist Loot Hub", "id": "@SadistLootHub", "link": "https://t.me/SadistLootHub"}
+    {"name": "Main Channel 🎟", "id": "@Shein_X_Deals", "link": "https://t.me/Shein_X_Deals"},
+    {"name": "Freinds Chats Group", "id": "@Ronakgupta2", "link": "https://t.me/ronakgupta2"},
+    {"name": "op Loot Hub", "id": "@oplooters10", "link": "https://t.me/oplooters10"}
 ]
 
 # --- DATABASE SETUP ---
