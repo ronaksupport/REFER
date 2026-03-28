@@ -5,13 +5,12 @@ import time
 import html
 
 # ---------------- CONFIGURATION ---------------- #
-API_TOKEN = "8675364583:AAFFkvZoWMPlxDEoJPJ0NNm1VNRU8Hp9K6U"
-ADMIN_IDS = [6806787718, 7582584348]
+API_TOKEN = "8702530001:AAE2Ww0T-n1IpZ8-n2luW141m6nsdv1vowk"
+ADMIN_IDS = [8702530001, 7582584348]
 SUPPORT_USER = "@Sheinsupport80"
 
 DEFAULT_CHANNELS = [
     {"name": "join", "id": "@ronakgupta2", "link": "https://t.me/ronakgupta2"},
-    {"name": "join", "id": "@devildeal18", "link": "https://t.me/devildeal18"}
 ]
 
 bot = telebot.TeleBot(API_TOKEN)
