@@ -1,505 +1,384 @@
-"""
-╔══════════════════════════════════════════════════════╗
-║  SLUR Refer Bot — Production Ready                  ║
-║  aiogram 3 + aiosqlite + uvloop                     ║
-║  Anti-fake | No crash | 20k+ users safe             ║
-╚══════════════════════════════════════════════════════╝
-Install:
-    pip install aiogram aiosqlite uvloop
-"""
-# ─────────────────────────────────────────────────────
-#  STDLIB
-# ─────────────────────────────────────────────────────
-import asyncio, logging, logging.handlers, os, io, csv
-import random, shutil, signal, sys, time
-from datetime import datetime
-from typing import Any, Awaitable, Callable, Optional
+import telebot
+from telebot import types
+import sqlite3
+import time
+import html
 
-# ─────────────────────────────────────────────────────
-#  UVLOOP — must be set BEFORE any asyncio usage
-# ─────────────────────────────────────────────────────
-try:
-    import uvloop
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    _UVLOOP = True
-except ImportError:
-    _UVLOOP = False
+# ---------------- CONFIGURATION ---------------- #
+API_TOKEN = "8685314945:AAFwlL__p28WIVcwWfN81rTq0eVp2KH5A5k"
+ADMIN_IDS = [7582584348, 8693729588]
+SUPPORT_USER = "@Ronakguptaji"
 
-# ─────────────────────────────────────────────────────
-#  AIOGRAM
-# ─────────────────────────────────────────────────────
-import aiosqlite
-from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
-from aiogram.types import (
-    Message, CallbackQuery, TelegramObject,
-    InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated,
-)
-from aiogram.filters import CommandStart, Command, ChatMemberUpdatedFilter, LEAVE_TRANSITION
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.exceptions import (
-    TelegramForbiddenError, TelegramBadRequest,
-    TelegramRetryAfter, TelegramNotFound,
-)
+DEFAULT_CHANNELS = [
+    {"name": "Shein X Deals", "id": "@Shein_X_Deals", "link": "https://t.me/Shein_X_Deals"},
+    {"name": "Ronak Chat", "id": "@Ronakgupta33", "link": "https://t.me/Ronakgupta33"},
+    { "name": "Shein loot ", "id": "@shein_X_Loot","link": "https://t.me/Shein_X_Loot" },
+    {"name": "OP Looters","id": "@oplooters10","link": "https://t.me/oplooters10"}
+]
 
-# ═══════════════════════════════════════════════════════
-#  CONFIG  ← sirf yahan badlo
-# ═══════════════════════════════════════════════════════
-BOT_TOKEN          = "8675364583:AAHTEeOezGCTtPbZ5DGoIIXXiqsO_jwOFQ8"
-OWNER_IDS          = [7582584348]       # permanent owners
-DB_PATH            = "refer_bot.db"
-BACKUP_EVERY_HOURS = 2
-LOG_FILE           = "refer_bot.log"
 
-# Anti-spam: ek user ko /start ke beech kitne seconds wait karna hoga
-# New users ke liye nahi — sirf existing users jo spam kar rahe ho
-USER_COOLDOWN_SEC  = 3
+bot = telebot.TeleBot(API_TOKEN)
 
-# ═══════════════════════════════════════════════════════
-#  LOGGING
-# ═══════════════════════════════════════════════════════
-def setup_logging() -> None:
-    fmt  = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    fh = logging.handlers.RotatingFileHandler(
-        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
-    fh.setFormatter(fmt); root.addHandler(fh)
-    sh = logging.StreamHandler(); sh.setFormatter(fmt); root.addHandler(sh)
+# ---------------- DATABASE SETUP ---------------- #
+def init_db():
+    conn = sqlite3.connect("haruki_referral.db")
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, ref_by INTEGER, points INTEGER DEFAULT 0, join_date TEXT, last_msg_id INTEGER)")
+    cur.execute("CREATE TABLE IF NOT EXISTS stock (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, code TEXT UNIQUE)")
+    cur.execute("CREATE TABLE IF NOT EXISTS channels (id INTEGER PRIMARY KEY AUTOINCREMENT, channel_name TEXT, channel_id TEXT, invite_link TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS services (id TEXT PRIMARY KEY, name TEXT, price INTEGER)")
+    cur.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
+    
+    for admin_id in ADMIN_IDS:
+        cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (admin_id,))
 
-log = logging.getLogger("slur")
+    cur.execute("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)")
+    cur.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)", ("referral_reward", "1"))
 
-# ═══════════════════════════════════════════════════════
-#  DATABASE  (aiosqlite — fully async, no thread pool)
-# ═══════════════════════════════════════════════════════
-_db:         Optional[aiosqlite.Connection] = None
-_write_lock: Optional[asyncio.Lock]         = None   # serialise writes
+    default_services = [("S500", "Shein 500 pe 500", 5), ("S1000", "Shein 1000 pe 1000", 10), ("S2000", "Shein 2000 pe 2000", 20), ("S4000", "Shein 4000 pe 4000", 40)]
+    for sid, name, price in default_services:
+        cur.execute("INSERT OR IGNORE INTO services (id,name,price) VALUES (?,?,?)", (sid,name,price))
 
-async def init_db() -> None:
-    global _db, _write_lock
-    _write_lock = asyncio.Lock()
-    _db = await aiosqlite.connect(DB_PATH)
-    _db.row_factory = aiosqlite.Row
-    await _db.executescript("""
-        PRAGMA journal_mode   = WAL;
-        PRAGMA synchronous    = NORMAL;
-        PRAGMA cache_size     = -32000;
-        PRAGMA temp_store     = MEMORY;
-        PRAGMA busy_timeout   = 10000;
-        PRAGMA foreign_keys   = ON;
-        PRAGMA wal_autocheckpoint = 1000;
+    cur.execute("DELETE FROM channels")
+    for c in DEFAULT_CHANNELS:
+        cur.execute("INSERT INTO channels (channel_name, channel_id, invite_link) VALUES (?,?,?)", (c["name"], c["id"], c["link"]))
 
-        CREATE TABLE IF NOT EXISTS users (
-            user_id     INTEGER PRIMARY KEY,
-            username    TEXT    DEFAULT '',
-            full_name   TEXT    DEFAULT '',
-            referred_by INTEGER,
-            points      INTEGER DEFAULT 0,
-            join_date   TEXT    DEFAULT (datetime('now')),
-            is_banned   INTEGER DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_pts ON users(points DESC);
+    conn.commit()
+    conn.close()
 
-        CREATE TABLE IF NOT EXISTS admins (
-            user_id  INTEGER PRIMARY KEY,
-            username TEXT DEFAULT '',
-            added_by INTEGER,
-            added_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS referrals (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            referrer_id INTEGER NOT NULL,
-            referred_id INTEGER NOT NULL UNIQUE,
-            is_valid    INTEGER DEFAULT 1,
-            credited    INTEGER DEFAULT 0,
-            created_at  TEXT    DEFAULT (datetime('now'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_ref ON referrals(referrer_id);
-
-        CREATE TABLE IF NOT EXISTS channels (
-            channel_id   TEXT PRIMARY KEY,
-            channel_name TEXT NOT NULL,
-            channel_link TEXT DEFAULT '',
-            added_at     TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS coupons (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            code            TEXT UNIQUE NOT NULL,
-            description     TEXT NOT NULL,
-            points_required INTEGER NOT NULL,
-            is_used         INTEGER DEFAULT 0,
-            used_by         INTEGER,
-            used_at         TEXT,
-            added_at        TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS withdrawals (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id      INTEGER,
-            coupon_id    INTEGER,
-            points_spent INTEGER,
-            created_at   TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY, value TEXT
-        );
-        INSERT OR IGNORE INTO settings VALUES ('min_withdraw_points','10');
-        INSERT OR IGNORE INTO settings VALUES ('points_per_refer','1');
-        INSERT OR IGNORE INTO settings VALUES ('support_bot','');
-        INSERT OR IGNORE INTO settings VALUES ('support_text','🆘 Support');
-    """)
-    await _db.commit()
-    log.info("Database initialised (aiosqlite + WAL)")
-
-# ─── DB helpers ─────────────────────────────────────
-async def db_fetch(sql: str, params: tuple = ()) -> list:
-    async with _db.execute(sql, params) as cur:
-        return await cur.fetchall()
-
-async def db_one(sql: str, params: tuple = ()):
-    async with _db.execute(sql, params) as cur:
-        return await cur.fetchone()
-
-async def db_write(sql: str, params: tuple = ()) -> None:
-    async with _write_lock:
-        await _db.execute(sql, params)
-        await _db.commit()
-
-async def db_write_many(stmts: list[tuple]) -> None:
-    """Multiple writes in one transaction — atomic."""
-    async with _write_lock:
-        for sql, params in stmts:
-            await _db.execute(sql, params)
-        await _db.commit()
-
-# ─── Setting helpers ─────────────────────────────────
-async def get_setting(k: str) -> str:
-    row = await db_one("SELECT value FROM settings WHERE key=?", (k,))
-    return row["value"] if row else ""
-
-async def set_setting(k: str, v) -> None:
-    await db_write("INSERT OR REPLACE INTO settings VALUES (?,?)", (k, str(v)))
-
-# ─── Channel helpers ─────────────────────────────────
-async def get_channels() -> list:
-    return await db_fetch("SELECT * FROM channels")
-
-# ─── Admin helpers ───────────────────────────────────
-async def all_admin_ids() -> list[int]:
-    rows = await db_fetch("SELECT user_id FROM admins")
-    return list(set(OWNER_IDS + [r["user_id"] for r in rows]))
-
-async def is_admin(uid: int) -> bool:
-    if uid in OWNER_IDS:
-        return True
-    return bool(await db_one("SELECT 1 FROM admins WHERE user_id=?", (uid,)))
-
-# ─── User helpers ────────────────────────────────────
-async def get_user(uid: int):
-    return await db_one("SELECT * FROM users WHERE user_id=?", (uid,))
-
-async def register_user(uid: int, uname: str, name: str, ref: Optional[int]) -> bool:
-    if await db_one("SELECT 1 FROM users WHERE user_id=?", (uid,)):
-        return False
-    await db_write(
-        "INSERT INTO users(user_id,username,full_name,referred_by) VALUES(?,?,?,?)",
-        (uid, uname or "", name or "", ref))
-    return True
-
-# ─── Referral helpers ────────────────────────────────
-async def credit_referrer(referred_id: int) -> Optional[int]:
-    u = await db_one("SELECT referred_by FROM users WHERE user_id=?", (referred_id,))
-    if not u or not u["referred_by"]:
+# ---------------- DB HELPERS ---------------- #
+def db_query(query, params=(), fetchone=False, fetchall=False):
+    conn = sqlite3.connect("haruki_referral.db")
+    cur = conn.cursor()
+    try:
+        cur.execute(query, params)
+        if fetchone: res = cur.fetchone()
+        elif fetchall: res = cur.fetchall()
+        else: res = None
+        conn.commit()
+        return res
+    except Exception as e:
+        print(f"DB Error: {e}")
         return None
-    referrer = u["referred_by"]
-    # idempotency check
-    done = await db_one("SELECT credited FROM referrals WHERE referred_id=?", (referred_id,))
-    if done and done["credited"]:
-        return None
-    pts = int(await get_setting("points_per_refer") or 1)
-    await db_write_many([
-        (
-            "INSERT INTO referrals(referrer_id,referred_id,credited) VALUES(?,?,1)"
-            " ON CONFLICT(referred_id) DO UPDATE SET credited=1",
-            (referrer, referred_id)
-        ),
-        ("UPDATE users SET points=points+? WHERE user_id=?", (pts, referrer)),
-    ])
-    return referrer
+    finally:
+        conn.close()
 
-async def deduct_on_leave(referred_id: int) -> tuple[Optional[int], int]:
-    row = await db_one(
-        "SELECT referrer_id, credited FROM referrals WHERE referred_id=? AND is_valid=1",
-        (referred_id,))
-    if not row or not row["credited"]:
-        return None, 0
-    referrer = row["referrer_id"]
-    pts = int(await get_setting("points_per_refer") or 1)
-    await db_write_many([
-        ("UPDATE referrals SET is_valid=0 WHERE referred_id=?", (referred_id,)),
-        ("UPDATE users SET points=MAX(0,points-?) WHERE user_id=?", (pts, referrer)),
-    ])
-    return referrer, pts
+def get_config(key):
+    res = db_query("SELECT value FROM config WHERE key=?", (key,), fetchone=True)
+    return int(res[0]) if res else 0
 
-async def ref_count(uid: int) -> int:
-    r = await db_one(
-        "SELECT COUNT(*) AS c FROM referrals WHERE referrer_id=? AND credited=1", (uid,))
-    return r["c"] if r else 0
+def is_admin(user_id):
+    return db_query("SELECT user_id FROM admins WHERE user_id=?", (user_id,), fetchone=True) is not None
 
-async def user_rank(uid: int) -> int:
-    r = await db_one(
-        "SELECT COUNT(*)+1 AS r FROM users WHERE points>"
-        "(SELECT points FROM users WHERE user_id=?)", (uid,))
-    return r["r"] if r else 1
+def get_divider():
+    return "<b>━━━━━━━━━━━━━━━━━━━━━━━━━</b>"
 
-async def leaderboard() -> list:
-    return await db_fetch(
-        "SELECT u.user_id, u.full_name, COUNT(r.id) AS refs, u.points"
-        " FROM users u"
-        " LEFT JOIN referrals r ON u.user_id=r.referrer_id AND r.credited=1"
-        " GROUP BY u.user_id ORDER BY refs DESC, u.points DESC LIMIT 10")
+# ---------------- KEYBOARDS ---------------- #
+def join_channels_kb(missing):
+    kb = types.InlineKeyboardMarkup()
+    for ch in missing:
+        kb.add(types.InlineKeyboardButton(f"👉 Join {ch['name']}", url=ch['link']))
+    kb.add(types.InlineKeyboardButton("✅ I Have Joined", callback_data="check_sub"))
+    return kb
 
-async def bot_stats() -> dict:
-    return {
-        "users":  (await db_one("SELECT COUNT(*) AS n FROM users"))["n"],
-        "refs":   (await db_one("SELECT COUNT(*) AS n FROM referrals WHERE credited=1"))["n"],
-        "pts":    (await db_one("SELECT COALESCE(SUM(points),0) AS n FROM users"))["n"],
-        "avail":  (await db_one("SELECT COUNT(*) AS n FROM coupons WHERE is_used=0"))["n"],
-        "used":   (await db_one("SELECT COUNT(*) AS n FROM coupons WHERE is_used=1"))["n"],
-        "banned": (await db_one("SELECT COUNT(*) AS n FROM users WHERE is_banned=1"))["n"],
-        "admins": (await db_one("SELECT COUNT(*) AS n FROM admins"))["n"],
-        "top5":   await db_fetch(
-            "SELECT u.full_name, COUNT(r.id) AS rc FROM users u"
-            " JOIN referrals r ON u.user_id=r.referrer_id AND r.credited=1"
-            " GROUP BY u.user_id ORDER BY rc DESC LIMIT 5"),
-    }
-
-# ═══════════════════════════════════════════════════════
-#  ANTI-SPAM MIDDLEWARE  (per-user cooldown, not global)
-# ═══════════════════════════════════════════════════════
-_last_action: dict[int, float] = {}
-
-class AntiSpamMiddleware(BaseMiddleware):
-    """
-    Ek user ke consecutive messages ke beech minimum delay.
-    New joins/callbacks are NOT blocked — only rapid repeated messages.
-    """
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, dict], Awaitable[Any]],
-        event: TelegramObject,
-        data: dict,
-    ) -> Any:
-        if isinstance(event, Message):
-            uid = event.from_user.id
-            now = time.monotonic()
-            last = _last_action.get(uid, 0)
-            if now - last < USER_COOLDOWN_SEC and uid not in OWNER_IDS:
-                try:
-                    await event.answer(
-                        f"⏳ Thoda ruko ({USER_COOLDOWN_SEC}s)...",
-                        cache_time=USER_COOLDOWN_SEC)
-                except Exception:
-                    pass
-                return
-            _last_action[uid] = now
-        return await handler(event, data)
-
-# ═══════════════════════════════════════════════════════
-#  TELEGRAM HELPERS
-# ═══════════════════════════════════════════════════════
-async def safe_send(bot: Bot, uid: int, **kw) -> bool:
-    """Retry on flood, silently skip blocked/deleted users."""
-    for attempt in range(3):
-        try:
-            await bot.send_message(uid, **kw)
-            return True
-        except TelegramRetryAfter as e:
-            wait = e.retry_after + 1
-            log.warning(f"RetryAfter {wait}s → uid={uid} (attempt {attempt+1})")
-            await asyncio.sleep(wait)
-        except (TelegramForbiddenError, TelegramNotFound):
-            return False   # user ne bot block kiya / account deleted
-        except TelegramBadRequest as e:
-            log.warning(f"BadRequest uid={uid}: {e}")
-            return False
-        except Exception as e:
-            log.error(f"safe_send uid={uid} attempt={attempt+1}: {e}")
-            if attempt < 2:
-                await asyncio.sleep(1)
-    return False
-
-async def check_all_joined(bot: Bot, uid: int) -> bool:
-    """Parallel channel check — all channels at once, fast."""
-    chans = await get_channels()
-    if not chans:
-        return True
-
-    async def _check(ch) -> bool:
-        for attempt in range(2):
-            try:
-                m = await bot.get_chat_member(ch["channel_id"], uid)
-                return m.status not in ("left", "kicked", "banned")
-            except TelegramRetryAfter as e:
-                await asyncio.sleep(e.retry_after + 1)
-            except Exception:
-                return False
-        return False
-
-    results = await asyncio.gather(*[_check(ch) for ch in chans],
-                                   return_exceptions=True)
-    return all(r is True for r in results)
-
-# ═══════════════════════════════════════════════════════
-#  CAPTCHA
-# ═══════════════════════════════════════════════════════
-def gen_captcha() -> tuple[str, int]:
-    ops = [("+", lambda a, b: a+b), ("-", lambda a, b: a-b), ("×", lambda a, b: a*b)]
-    a, b = random.randint(2, 9), random.randint(2, 9)
-    sym, fn = random.choice(ops)
-    if sym == "-" and b > a:
-        a, b = b, a
-    return f"{a} {sym} {b}", fn(a, b)
-
-# ═══════════════════════════════════════════════════════
-#  KEYBOARDS
-# ═══════════════════════════════════════════════════════
-def main_kb(is_admin: bool = False, sup: str = "", suptxt: str = "🆘 Support"):
-    rows = [
-        [InlineKeyboardButton(text="👤 Profile",       callback_data="profile"),
-         InlineKeyboardButton(text="🔗 Referral Link", callback_data="refer_link")],
-        [InlineKeyboardButton(text="🏆 Leaderboard",   callback_data="leaderboard"),
-         InlineKeyboardButton(text="🎁 Redeem Points", callback_data="redeem")],
-        [InlineKeyboardButton(text="📋 How It Works",  callback_data="how_it_works")],
-    ]
-    if sup:
-        rows.append([InlineKeyboardButton(text=suptxt or "🆘 Support", url=sup)])
-    if is_admin:
-        rows.append([InlineKeyboardButton(text="⚙️ Admin Panel", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def join_kb(chans: list):
-    rows = []
-    for ch in chans:
-        link = ch["channel_link"] or ("https://t.me/" + ch["channel_id"].lstrip("@"))
-        rows.append([InlineKeyboardButton(text="📢 " + ch["channel_name"], url=link)])
-    rows.append([InlineKeyboardButton(text="✅ Verify Karo!", callback_data="verify_join")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def back_kb(dest: str, label: str = "🔙 Back"):
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=dest)]])
+def main_menu_kb(user_id):
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2, is_persistent=True)
+    kb.add(types.KeyboardButton("🎁 Redeem Loot"), types.KeyboardButton("🤝 Refer & Earn"), types.KeyboardButton("👤 Profile"), types.KeyboardButton("📞 Support"))
+    if is_admin(user_id):
+        kb.add(types.KeyboardButton("🛠 Admin Panel"))
+    return kb
 
 def admin_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Stats",         callback_data="a_stats"),
-         InlineKeyboardButton(text="📢 Channels",      callback_data="a_channels")],
-        [InlineKeyboardButton(text="🎟 Coupons",       callback_data="a_coupons"),
-         InlineKeyboardButton(text="📋 Withdrawals",   callback_data="a_wdraw")],
-        [InlineKeyboardButton(text="⚙️ Settings",      callback_data="a_settings"),
-         InlineKeyboardButton(text="📣 Broadcast",     callback_data="a_bcast")],
-        [InlineKeyboardButton(text="👮 Manage Admins", callback_data="a_admins")],
-        [InlineKeyboardButton(text="🔙 Main Menu",     callback_data="main_menu")],
-    ])
+    kb = types.InlineKeyboardMarkup()
+    kb.row(types.InlineKeyboardButton("➕ Add Stock", callback_data="adm_stock"), types.InlineKeyboardButton("🗑 Clear All", callback_data="adm_clear"))
+    kb.row(types.InlineKeyboardButton("🎯 Add Points", callback_data="adm_pts"), types.InlineKeyboardButton("💰 Set Price", callback_data="adm_price"))
+    kb.row(types.InlineKeyboardButton("📢 Broadcast", callback_data="adm_bc"), types.InlineKeyboardButton("🔗 Channels", callback_data="adm_ch"))
+    kb.row(types.InlineKeyboardButton("🔙 Close", callback_data="adm_close"))
+    return kb
 
-# ═══════════════════════════════════════════════════════
-#  FSM STATES
-# ═══════════════════════════════════════════════════════
-class S(StatesGroup):
-    captcha  = State()
-    ch_id    = State()
-    ch_name  = State()
-    ch_link  = State()
-    cp_code  = State()
-    cp_desc  = State()
-    cp_pts   = State()
-    min_pts  = State()
-    ref_pts  = State()
-    sup_link = State()
-    sup_text = State()
-    bcast    = State()
-    add_adm  = State()
+def back_kb(cb):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔙 Back", callback_data=cb))
+    return kb
 
-# ═══════════════════════════════════════════════════════
-#  ROUTER + GUARD
-# ═══════════════════════════════════════════════════════
-router = Router()
+# ---------------- MEMBERSHIP LOGIC ---------------- #
+def check_membership(user_id):
+    channels = db_query("SELECT channel_id, invite_link, channel_name FROM channels", fetchall=True)
+    missing = []
+    if channels:
+        for cid, link, name in channels:
+            try:
+                member = bot.get_chat_member(cid, user_id)
+                if member.status in ['left', 'kicked', 'restricted']: missing.append({'name': name, 'link': link, 'id': cid})
+            except Exception:
+                missing.append({'name': name, 'link': link, 'id': cid})
+    return missing
 
-async def guard(cq: CallbackQuery) -> bool:
-    if not await is_admin(cq.from_user.id):
-        await cq.answer("❌ Unauthorized!", show_alert=True)
+def is_subscribed_or_restrict(chat_id, user_id):
+    missing = check_membership(user_id)
+    if missing:
+        text = f"🚫 <b>Access Restricted</b>\n{get_divider()}\nTo access the bot, you must be a member of our channels."
+        bot.send_message(chat_id, text, reply_markup=join_channels_kb(missing), parse_mode="HTML")
         return False
     return True
 
-async def guard_m(msg: Message) -> bool:
-    return await is_admin(msg.from_user.id)
-
-# ═══════════════════════════════════════════════════════
-#  /start  +  CAPTCHA
-# ═══════════════════════════════════════════════════════
-@router.message(CommandStart())
-async def cmd_start(msg: Message, bot: Bot, state: FSMContext):
+def send_welcome(chat_id, first_name, user_id):
     try:
-        uid  = msg.from_user.id
-        name = msg.from_user.full_name or "User"
-
-        # ── parse referral arg ──
-        ref_id: Optional[int] = None
-        parts = msg.text.split()
-        if len(parts) > 1:
-            try:
-                r = int(parts[1])
-                if r != uid:          # self-refer block
-                    # check referrer actually exists
-                    if await db_one("SELECT 1 FROM users WHERE user_id=?", (r,)):
-                        ref_id = r
-            except ValueError:
-                pass
-
-        u = await get_user(uid)
-
-        if u and u["is_banned"]:
-            await msg.answer("🚫 Aapko ban kar diya gaya hai.")
-            return
-
-        # ── returning user ──
-        if u:
-            await state.clear()   # koi purani state clear karo
-            chans = await get_channels()
-            if chans and not await check_all_joined(bot, uid):
-                await msg.answer(
-                    f"👋 <b>{name}</b>, pehle sare channels join karo:",
-                    parse_mode="HTML", reply_markup=join_kb(chans))
-                return
-            sup    = await get_setting("support_bot")
-            suptxt = await get_setting("support_text")
-            adm    = await is_admin(uid)
-            await msg.answer(
-                f"👋 Welcome back, <b>{name}</b>!",
-                parse_mode="HTML", reply_markup=main_kb(adm, sup, suptxt))
-            return
-
-        # ── new user → captcha ──
-        q, ans = gen_captcha()
-        await state.set_state(S.captcha)
-        await state.update_data(ans=ans, tries=0, ref_id=ref_id,
-                                name=name, uname=msg.from_user.username or "")
-        await msg.answer(
-            f"👋 Welcome <b>{name}</b>!\n\n"
-            "🤖 <b>Verification</b> — prove karo ki tum bot nahi ho:\n\n"
-            f"<b>🔢  {q}  = ?</b>\n\nSirf number type karo:",
-            parse_mode="HTML")
+        safe_name = html.escape(first_name) if first_name else "User"
+        text = f"👋 <b>Welcome, {safe_name}.</b>\n{get_divider()}\n💎 <b>HARUKI LOOT SYSTEM</b> 💎\n<b>Refer friends. Earn points. Redeem Shein Coupons for FREE.</b>\n\n<i>Select an option below to begin.</i>"
+        bot.send_message(chat_id, text, reply_markup=main_menu_kb(user_id), parse_mode="HTML")
     except Exception as e:
-        log.error(f"cmd_start uid={msg.from_user.id}: {e}", exc_info=True)
+        print(f"Error in send_welcome: {e}")
 
-
-@router.message(S.captcha)
-async def captcha_ans(msg: Message, bot: Bot, state: FSMContext):
+# ---------------- HANDLERS ---------------- #
+@bot.message_handler(commands=["start"])
+def start(message):
     try:
-        data    = await state.get_data()
-        correct = data.get("ans")
-        tries   =
+        user_id = message.from_user.id
+        username = f"@{message.from_user.username}" if message.from_user.username else "No_Username"
+        db_query("INSERT OR IGNORE INTO users (user_id, username, points, join_date) VALUES (?,?,0,?)", (user_id, username, time.strftime("%Y-%m-%d")))
+        if not is_subscribed_or_restrict(message.chat.id, user_id): return
+        user_data = db_query("SELECT ref_by FROM users WHERE user_id = ?", (user_id,), fetchone=True)
+        if user_data and user_data[0] is None:
+            args = message.text.split()
+            if len(args) > 1 and args[1].isdigit() and int(args[1]) != user_id:
+                ref_id = int(args[1])
+                if db_query("SELECT 1 FROM users WHERE user_id=?", (ref_id,), fetchone=True):
+                    reward = get_config("referral_reward")
+                    db_query("UPDATE users SET ref_by=? WHERE user_id=?", (ref_id, user_id))
+                    db_query("UPDATE users SET points=points+? WHERE user_id=?", (reward, ref_id))
+                    try: bot.send_message(ref_id, f"🎉 <b>New Referral!</b>\n+ {reward} Points added.", parse_mode="HTML")
+                    except Exception: pass
+        send_welcome(message.chat.id, message.from_user.first_name, user_id)
+    except Exception as e:
+        print(f"Error in START: {e}")
+
+@bot.message_handler(commands=["panel"])
+def admin_panel_cmd(message):
+    if is_admin(message.from_user.id): bot.send_message(message.from_user.id, "🛠 <b>ADMIN TERMINAL</b>", reply_markup=admin_kb(), parse_mode="HTML")
+
+@bot.message_handler(func=lambda message: message.text == "🛠 Admin Panel")
+def admin_panel_btn(message):
+    if is_admin(message.from_user.id): bot.send_message(message.from_user.id, "🛠 <b>ADMIN TERMINAL</b>", reply_markup=admin_kb(), parse_mode="HTML")
+
+@bot.message_handler(func=lambda message: message.text == "🎁 Redeem Loot")
+def redeem_menu(message):
+    user_id = message.from_user.id
+    if not is_subscribed_or_restrict(message.chat.id, user_id): return 
+    user_pts = db_query("SELECT points FROM users WHERE user_id=?", (user_id,), fetchone=True)[0]
+    services = db_query("SELECT id, name, price FROM services", fetchall=True)
+    kb = types.InlineKeyboardMarkup()
+    items_shown = False
+    text = f"🎁 <b>REDEEM SHOP</b>\n{get_divider()}\n💎 <b>Your Balance:</b> {user_pts} Points\n👇 <b>Available Loot:</b>\n"
+    if services:
+        for sid, name, price in services:
+            count = db_query("SELECT COUNT(*) FROM stock WHERE type=?", (sid,), fetchone=True)[0]
+            if count > 0:
+                items_shown = True
+                kb.add(types.InlineKeyboardButton(f"🎟 {name} ({price} Pts)", callback_data=f"redeem_{sid}"))
+    if not items_shown: text += "\n🔴 <b>Everything is currently OUT OF STOCK.</b>\n<i>Please check back later!</i>"
+    else: text += "\n<i>Click an item to redeem instantly.</i>"
+    bot.send_message(user_id, text, reply_markup=kb, parse_mode="HTML")
+
+@bot.message_handler(func=lambda message: message.text == "🤝 Refer & Earn")
+def refer_menu(message):
+    user_id = message.from_user.id
+    if not is_subscribed_or_restrict(message.chat.id, user_id): return 
+    bot_info = bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={user_id}"
+    reward = get_config("referral_reward")
+    text = f"🤝 <b>REFERRAL PROGRAM</b>\n{get_divider()}\n<b>Invite friends and earn points to redeem premium loot.</b>\n\n🎁 <b>Reward:</b> {reward} Points / User\n🔗 <b>Your Link:</b>\n<code>{link}</code>\n\n<i>Tap to copy.</i>"
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🚀 Share Link", url=f"https://t.me/share/url?url={link}&text=Join%20Now!"))
+    bot.send_message(user_id, text, reply_markup=kb, parse_mode="HTML")
+
+@bot.message_handler(func=lambda message: message.text == "👤 Profile")
+def profile_menu(message):
+    user_id = message.from_user.id
+    if not is_subscribed_or_restrict(message.chat.id, user_id): return 
+    user = db_query("SELECT points FROM users WHERE user_id=?", (user_id,), fetchone=True)
+    pts = user[0] if user else 0
+    text = f"👤 <b>USER DASHBOARD</b>\n{get_divider()}\n🆔 <b>ID:</b> <code>{user_id}</code>\n💎 <b>Balance:</b> {pts} Points\n{get_divider()}"
+    bot.send_message(user_id, text, parse_mode="HTML")
+
+@bot.message_handler(func=lambda message: message.text == "📞 Support")
+def support_menu(message):
+    user_id = message.from_user.id
+    if not is_subscribed_or_restrict(message.chat.id, user_id): return 
+    text = f"📞 <b>SUPPORT</b>\n{get_divider()}\nContact: {SUPPORT_USER}"
+    bot.send_message(message.from_user.id, text, parse_mode="HTML")
+
+# ---------------- ADMIN MULTI-STEP LOGIC ---------------- #
+def process_add_stock(message, sid):
+    codes = [x.strip() for x in message.text.replace(',', '\n').split('\n') if x.strip()]
+    for c in codes: db_query("INSERT OR IGNORE INTO stock (type, code) VALUES (?, ?)", (sid, c))
+    bot.send_message(message.chat.id, f"✅ Added {len(codes)} codes to {sid}.", reply_markup=admin_kb())
+
+def process_set_price(message, sid):
+    try:
+        new_price = int(message.text)
+        db_query("UPDATE services SET price=? WHERE id=?", (new_price, sid))
+        bot.send_message(message.chat.id, f"✅ Price updated.", reply_markup=admin_kb())
+    except Exception: bot.send_message(message.chat.id, "❌ Invalid number. Try again from Panel.")
+
+def process_add_pts_uid(message):
+    uid = message.text
+    msg = bot.send_message(message.chat.id, "🔢 <b>Enter Amount to Add:</b>", parse_mode="HTML")
+    bot.register_next_step_handler(msg, process_add_pts_amt, uid)
+
+def process_add_pts_amt(message, uid):
+    try:
+        amt = int(message.text)
+        db_query("UPDATE users SET points = points + ? WHERE user_id=?", (amt, uid))
+        bot.send_message(message.chat.id, f"✅ Added {amt} points to {uid}", reply_markup=admin_kb())
+        try: bot.send_message(uid, f"🎁 <b>Admin added {amt} points to your balance!</b>", parse_mode="HTML")
+        except Exception: pass
+    except Exception: bot.send_message(message.chat.id, "❌ Invalid number.")
+
+def process_broadcast(message):
+    users = db_query("SELECT user_id FROM users", fetchall=True)
+    count = 0
+    m = bot.send_message(message.chat.id, "🚀 Sending...")
+    for u in users:
+        try:
+            bot.copy_message(chat_id=u[0], from_chat_id=message.chat.id, message_id=message.message_id)
+            count += 1
+            time.sleep(0.05)
+        except Exception: pass
+    bot.edit_message_text(f"✅ Sent to {count} users.", m.chat.id, m.message_id)
+    bot.send_message(message.chat.id, "🛠 <b>ADMIN TERMINAL</b>", reply_markup=admin_kb(), parse_mode="HTML")
+
+def process_add_ch_id(message):
+    cid = message.text
+    msg = bot.send_message(message.chat.id, "2️⃣ <b>Send Channel Name:</b>", parse_mode="HTML")
+    bot.register_next_step_handler(msg, process_add_ch_name, cid)
+
+def process_add_ch_name(message, cid):
+    cname = message.text
+    msg = bot.send_message(message.chat.id, "3️⃣ <b>Send Invite Link:</b>", parse_mode="HTML")
+    bot.register_next_step_handler(msg, process_add_ch_link, cid, cname)
+
+def process_add_ch_link(message, cid, cname):
+    link = message.text
+    db_query("INSERT INTO channels (channel_name, channel_id, invite_link) VALUES (?,?,?)", (cname, cid, link))
+    bot.send_message(message.chat.id, "✅ Channel Added.", reply_markup=admin_kb())
+
+# ---------------- CALLBACK HANDLERS ---------------- #
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    user_id = call.from_user.id
+    data = call.data
+
+    if data == "check_sub":
+        missing = check_membership(user_id)
+        if not missing:
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception: pass
+            send_welcome(call.message.chat.id, call.from_user.first_name, user_id)
+        else:
+            bot.answer_callback_query(call.id, "❌ You are still missing channels!", show_alert=True)
+
+    elif data.startswith("redeem_"):
+        if not is_subscribed_or_restrict(call.message.chat.id, user_id): return 
+        sid = data.split("_")[1]
+        service = db_query("SELECT name, price FROM services WHERE id=?", (sid,), fetchone=True)
+        if not service: return bot.answer_callback_query(call.id, "Service error.")
+        name, price = service
+        conn = sqlite3.connect("haruki_referral.db")
+        cur = conn.cursor()
+        try:
+            cur.execute("BEGIN IMMEDIATE")
+            pts = cur.execute("SELECT points FROM users WHERE user_id=?", (user_id,)).fetchone()[0]
+            if pts < price:
+                bot.answer_callback_query(call.id, f"❌ You need {price} points!", show_alert=True)
+                return
+            code_row = cur.execute("SELECT id, code FROM stock WHERE type=? LIMIT 1", (sid,)).fetchone()
+            if not code_row:
+                bot.answer_callback_query(call.id, "❌ Just went out of stock!", show_alert=True)
+                return
+            cur.execute("DELETE FROM stock WHERE id=?", (code_row[0],))
+            cur.execute("UPDATE users SET points = points - ? WHERE user_id=?", (price, user_id))
+            conn.commit()
+            code = code_row[1]
+            text = f"✅ <b>SUCCESSFULLY REDEEMED!</b>\n{get_divider()}\n📦 <b>Item:</b> {name}\n🎟 <b>Code:</b> <code>{code}</code>\n{get_divider()}\n<i>Screenshot this immediately.</i>"
+            bot.send_message(user_id, text, parse_mode="HTML")
+        except Exception as e:
+            conn.rollback()
+            bot.answer_callback_query(call.id, "Error processing request.", show_alert=True)
+        finally:
+            conn.close()
+
+    elif data == "adm_close":
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception: pass
+
+    elif data == "adm_home":
+        bot.clear_step_handler_by_chat_id(call.message.chat.id)
+        bot.edit_message_text("🛠 <b>ADMIN TERMINAL</b>", call.message.chat.id, call.message.message_id, reply_markup=admin_kb(), parse_mode="HTML")
+
+    elif data == "adm_clear":
+        db_query("DELETE FROM stock")
+        bot.answer_callback_query(call.id, "🗑 All Stock Cleared", show_alert=True)
+        
+    elif data == "adm_stock":
+        services = db_query("SELECT id, name FROM services", fetchall=True)
+        kb = types.InlineKeyboardMarkup()
+        for sid, name in services: kb.add(types.InlineKeyboardButton(f"➕ {name}", callback_data=f"add_stk_{sid}"))
+        kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_home"))
+        bot.edit_message_text("📥 <b>Select Category to Add Stock:</b>", call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+    elif data.startswith("add_stk_"):
+        sid = data.split("_")[2]
+        msg = bot.edit_message_text(f"📥 <b>Paste Codes for {sid}:</b>\n(One per line)", call.message.chat.id, call.message.message_id, reply_markup=back_kb("adm_home"), parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_add_stock, sid)
+
+    elif data == "adm_price":
+        services = db_query("SELECT id, name, price FROM services", fetchall=True)
+        kb = types.InlineKeyboardMarkup()
+        for sid, name, price in services: kb.add(types.InlineKeyboardButton(f"💰 {name} ({price} Pts)", callback_data=f"set_pr_{sid}"))
+        kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_home"))
+        bot.edit_message_text("💰 <b>Select Category to Change Price:</b>", call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+    elif data.startswith("set_pr_"):
+        sid = data.split("_")[2]
+        msg = bot.edit_message_text(f"💰 <b>Enter New Point Cost for {sid}:</b>", call.message.chat.id, call.message.message_id, reply_markup=back_kb("adm_home"), parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_set_price, sid)
+
+    elif data == "adm_pts":
+        msg = bot.edit_message_text("👤 <b>Send User ID to add points:</b>", call.message.chat.id, call.message.message_id, reply_markup=back_kb("adm_home"), parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_add_pts_uid)
+
+    elif data == "adm_bc":
+        msg = bot.edit_message_text("📢 <b>Send Broadcast Message:</b>", call.message.chat.id, call.message.message_id, reply_markup=back_kb("adm_home"), parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_broadcast)
+
+    elif data == "adm_ch":
+        chans = db_query("SELECT id, channel_name FROM channels", fetchall=True)
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("➕ Add Channel", callback_data="add_ch_start"))
+        if chans:
+            for cid, name in chans: kb.add(types.InlineKeyboardButton(f"🗑 Remove {name}", callback_data=f"del_ch_{cid}"))
+        kb.add(types.InlineKeyboardButton("🔙 Back", callback_data="adm_home"))
+        bot.edit_message_text("📢 <b>Manage Channels</b>", call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+    elif data.startswith("del_ch_"):
+        cid = data.split("_")[2]
+        db_query("DELETE FROM channels WHERE id=?", (cid,))
+        bot.answer_callback_query(call.id, "Channel Removed", show_alert=True)
+        call.data = "adm_ch"
+        callback_handler(call) 
+
+    elif data == "add_ch_start":
+        msg = bot.edit_message_text("1️⃣ <b>Send Channel ID (e.g. -100...):</b>", call.message.chat.id, call.message.message_id, parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_add_ch_id)
+
+# ---------------- INIT ---------------- #
+init_db()
+
+# ---------------- RUN BOT ---------------- #
+if __name__ == "__main__":
+    print("Haruki Bot Termux Fixed Version is Running...")
+    while True:
+        try:
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        except Ex
