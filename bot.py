@@ -13,7 +13,9 @@ DEFAULT_CHANNELS = [
     {"name": "Shein X Deals", "id": "@Shein_X_Deals", "link": "https://t.me/Shein_X_Deals"},
     {"name": "Ronak Chat", "id": "@Ronakgupta33", "link": "https://t.me/Ronakgupta33"},
     { "name": "Shein loot ", "id": "@shein_X_Loot","link": "https://t.me/Shein_X_Loot" },
-    {"name": "OP Looters","id": "@oplooters10","link": "https://t.me/oplooters10"}
+    {"name": "OP Looters","id": "@oplooters10","link": "https://t.me/oplooters10"},
+    {"name": "Deals with earn","id": "@DealsWithEwaan","link": "https://t.me/DealsWithEwaan"},
+    {"name": "Deal hunting","id": "@dealhuntings","link": "https://t.me/dealhuntings"}
 ]
 
 
